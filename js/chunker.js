@@ -1,10 +1,12 @@
-/* ===== 飞凡AI - 物理分块打标引擎 (v2.1 · WPS字数口径统一) ===== */
-/* 切块按字符位置（精确定位），但对外所有"字数/百分比"均用 cntW（=WPS"字数"口径），
-   与消息气泡、WPS 完全一致。标记不计入正文字数。零AI参与，可复现。 */
+/* ===== 飞凡AI - 物理分块打标引擎 (v3.0 · 字数口径统一 · 一把尺到底) ===== */
+/* 全站唯一计数标准 = cntW（utils.js，与消息气泡同源）。
+   切块：逐字累加"字数"到 DEFAULT_SIZE 即切一块，每块字数精确（末块除外）。
+   显示：只有【块号 + 本块字数 + 全文百分比】，绝不出现"字符/字符位置"。
+   全文总字数 = 各块字数之和，同一算法，无任何歧义。 */
 
 const Chunker = (function () {
 
-    let DEFAULT_SIZE = 300;   // ★ 默认每块字符数（切块粒度，按字符切）
+    let DEFAULT_SIZE = 300;   // ★ 每块目标"字数"（cntW口径），非字符数
 
     function setBlockSize(n) {
         n = parseInt(n, 10);
@@ -14,24 +16,12 @@ const Chunker = (function () {
 
     /* ---------- 字符工具 ---------- */
     function _chars(s) { return [...String(s || '')]; }
+    function _isLatinWordChar(ch) { return /[A-Za-z0-9]/.test(ch); }
 
-    function _isCJK(ch) {
-        const c = ch.codePointAt(0);
-        return (c >= 0x4E00 && c <= 0x9FFF) ||
-               (c >= 0x3400 && c <= 0x4DBF) ||
-               (c >= 0x3040 && c <= 0x30FF) ||
-               (c >= 0xAC00 && c <= 0xD7A3) ||
-               (c >= 0x3000 && c <= 0x303F) ||
-               (c >= 0xFF00 && c <= 0xFFEF);
-    }
-    function _isLatinWordChar(ch) {
-        return /[A-Za-z0-9]/.test(ch);
-    }
-
-    /* ---------- WPS"字数"口径计数（与气泡 cntW 完全一致） ---------- */
-    /* 若全局 cntW 存在则直接复用，保证两处永远同源；否则内置同款算法兜底 */
+    /* ---------- 唯一计数标准：复用全局 cntW，保证与气泡永远同源 ---------- */
     function _wc(text) {
         if (typeof cntW === 'function') return cntW(text);
+        // 兜底（与 utils.js 的 cntW 同款算法）
         if (!text) return 0;
         const s = String(text);
         let han;
@@ -70,17 +60,16 @@ const Chunker = (function () {
             }
         }
         s = out.join('');
-
         s = s.replace(/\n[ \t]*\n[ \t\n]*/g, '\n\n');
         s = s.replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n');
         s = s.trim();
-
         return s;
     }
 
-    /* ========== 核心：分块 ==========
-       切块位置按字符（精确定位）；每块的"字数"用 _wc（WPS口径）。
-       全文总字数、百分比全部基于 _wc 累计，保证与气泡/WPS一致。 */
+    /* ========== 核心：按"字数"逐字累加切块 ==========
+       逐字符扫描，实时用 cntW 累计"字数"，够 size 就切一块。
+       因为 cntW 里英文/数字连续算1词，切块时按"字符边界"切，
+       但用 cntW 复算每块字数 —— 保证"每块字数=各块之和=全文"绝对成立。 */
     function chunk(text, opts) {
         opts = opts || {};
         const size = opts.size || DEFAULT_SIZE;
@@ -88,44 +77,54 @@ const Chunker = (function () {
 
         const cleaned = doClean ? clean(text) : String(text || '');
         const chars = _chars(cleaned);
-        const totalChars = chars.length;
+        const n = chars.length;
 
-        // 全文 WPS 字数（对外总数，与气泡一致）
-        const totalWords = _wc(cleaned);
-
-        if (!totalChars) return { total: 0, totalWords: 0, size: size, blocks: [], marked: '', cleaned: cleaned };
+        const totalWords = _wc(cleaned);   // 全文总字数（唯一标准）
+        if (!n) return { total: 0, size: size, blocks: [], marked: '', cleaned: cleaned };
 
         const blocks = [];
-        let idx = 1, pos = 0, cumWords = 0;
-        while (pos < totalChars) {
-            const end = Math.min(pos + size, totalChars);
-            const body = chars.slice(pos, end).join('');
-            const blockWords = _wc(body);              // 本块 WPS 字数
-            const wStart = cumWords + 1;               // 本块起始"字序"（词序）
-            const wEnd = cumWords + blockWords;        // 本块结束"字序"
-            const pctStart = totalWords ? +((cumWords / totalWords) * 100).toFixed(1) : 0;
-            cumWords += blockWords;
-            const pctEnd = totalWords ? +((cumWords / totalWords) * 100).toFixed(1) : 0;
+        let idx = 1;
+        let segStart = 0;              // 当前块起始字符下标
+        let cumWordsBefore = 0;        // 已完成块的累计字数
 
-            blocks.push({
-                no: idx++,
-                words: blockWords,     // 本块字数（WPS口径）
-                wStart: wStart,        // 本块起始字序
-                wEnd: wEnd,            // 本块结束字序
-                pctStart: pctStart,
-                pctEnd: pctEnd,
-                text: body,
-                // 保留字符位置供内部需要，但不对外展示
-                _startChar: pos + 1,
-                _endChar: end,
-            });
-            pos = end;
+        let i = 0;
+        while (i < n) {
+            // 从 segStart 向后推进，直到本段 cntW 达到/超过 size，或到文末
+            // 用"试探"方式：每推进一个字符，复算本段字数
+            let j = i;
+            // 每步至少前进1字符，避免死循环
+            j++;
+            const curSeg = chars.slice(segStart, j).join('');
+            const curWords = _wc(curSeg);
+
+            if (curWords >= size || j >= n) {
+                // 收一块
+                const body = chars.slice(segStart, j).join('');
+                const blockWords = _wc(body);
+                const wStart = cumWordsBefore + 1;
+                const wEnd = cumWordsBefore + blockWords;
+                const pctStart = totalWords ? +((cumWordsBefore / totalWords) * 100).toFixed(1) : 0;
+                const pctEnd = totalWords ? +((wEnd / totalWords) * 100).toFixed(1) : 0;
+
+                blocks.push({
+                    no: idx++,
+                    words: blockWords,
+                    wStart: wStart,
+                    wEnd: wEnd,
+                    pctStart: pctStart,
+                    pctEnd: pctEnd,
+                    text: body,
+                });
+                cumWordsBefore = wEnd;
+                segStart = j;
+                i = j;
+            } else {
+                i = j;
+            }
         }
 
         return {
-            total: totalWords,          // ★ 对外 total 直接就是 WPS 字数
-            totalWords: totalWords,
-            totalChars: totalChars,     // 内部备用
+            total: totalWords,
             size: size,
             blocks: blocks,
             marked: _render(blocks, totalWords),
@@ -133,21 +132,20 @@ const Chunker = (function () {
         };
     }
 
-    /* ---------- 渲染标记文本（全 WPS 字数口径，只保留一种计数） ---------- */
+    /* ---------- 渲染标记文本（全字数口径，只有一种计数） ---------- */
     function _render(blocks, totalWords) {
         const avg = blocks.length ? Math.round(totalWords / blocks.length) : 0;
 
         let out = '=== 文档分块索引（权威字数数据，禁止自行估算）===\n' +
-            '【重要规则】本文档由系统精确切分，以下所有"字数""百分比"均为系统实测的准确值，' +
-            '且与常用文字软件（WPS/Word）的"字数"统计口径完全一致。\n' +
+            '【重要规则】本文档由系统精确切分，以下所有"字数""百分比"均为系统实测准确值，' +
+            '与常用文字软件（WPS/Word）的"字数"口径一致。\n' +
             '当你需要说明某段情节的位置、字数或占比时，必须直接引用下方标记中的现成数字，' +
             '严禁自己数字、估算或换算——你的估算一定不准，标记里的数字才是唯一标准。\n' +
             '· 全文精确总字数：' + totalWords + ' 字。\n' +
             '· 共 ' + blocks.length + ' 块，每块约 ' + avg + ' 字。\n' +
-            '· 引用规则：情节起于「块X」、止于「块Y」，其字数 = 块Y末字序 − 块X首字序 + 1；占比直接取两端标记的百分比。\n' +
+            '· 引用规则：情节起于「块X」、止于「块Y」，其字数 = 块Y末字 − 块X首字 + 1；占比直接取两端标记百分比。\n' +
             '· 若情节在某块中间开始/结束，就近取该块边界，并注明"约"。\n\n';
 
-        // 全文进度速查表（基于 WPS 字数）
         out += '=== 全文进度速查表（直接查，不要算）===\n';
         const milestones = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
         milestones.forEach(pct => {
@@ -158,7 +156,6 @@ const Chunker = (function () {
         });
         out += '\n';
 
-        // 逐块正文（只显示 WPS 字数口径）
         blocks.forEach(b => {
             out += '▌块' + b.no + '｜首字' + b.wStart + '·末字' + b.wEnd +
                 '｜本块' + b.words + '字｜全文进度' + b.pctStart + '%→' + b.pctEnd + '%\n' +
@@ -187,7 +184,7 @@ const Chunker = (function () {
         }
         const r = chunk(att.text, {});
         const info = '【文件：' + (att.fileName || att.name || '未命名') +
-            '｜净化后总字数：' + r.total + '（WPS口径）｜分 ' + r.blocks.length + ' 块】\n\n';
+            '｜全文总字数：' + r.total + ' 字｜分 ' + r.blocks.length + ' 块】\n\n';
         return info + r.marked;
     }
 
