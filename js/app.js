@@ -21,7 +21,7 @@ async function loadState(){
         if(!S.folderCollapsed||typeof S.folderCollapsed!=='object')S.folderCollapsed={};
         if(!S.defaultMode)S.defaultMode='free';
         if(!S.chatOrder||!S.chatOrder.length)S.chatOrder=Object.keys(S.chats||{}).sort((a,b)=>(S.chats[b].updatedAt||0)-(S.chats[a].updatedAt||0));
-        for(const cid in S.chats){const c=S.chats[cid];if(!Array.isArray(c.refPool))c.refPool=[];if(c.messages)c.messages.forEach(m=>{if(m._streaming){m._streaming=false;m._interrupted=true;}});}
+        for(const cid in S.chats){const c=S.chats[cid];if(!Array.isArray(c.refPool))c.refPool=[];c.refPool.forEach(r=>{if(r.kind==='file'&&r.type!=='image'&&r.chunk===undefined)r.chunk=false;});if(c.messages)c.messages.forEach(m=>{if(m._streaming){m._streaming=false;m._interrupted=true;}});}
     }
     if(!S._engineMigrated){const kept={};for(const id in S.profiles){const p=S.profiles[id];if(p.origin==='private'&&p.key)kept[id]=p;}S.profiles=kept;S._engineMigrated=true;}
     if(!S.profiles||typeof S.profiles!=='object')S.profiles={};
@@ -101,7 +101,58 @@ function sortedRefPool(){
     const msgs=pool.filter(r=>r.kind==='message').sort((a,b)=>(a.addedAt||0)-(b.addedAt||0));
     return files.concat(msgs);
 }
-function renderRefPool(){const bar=document.getElementById('refBar');const list=document.getElementById('refList');if(!bar||!list)return;const pool=sortedRefPool();if(!pool.length){bar.style.display='none';list.innerHTML='';return;}bar.style.display='flex';list.innerHTML='';pool.forEach((r)=>{const item=document.createElement('span');item.className='ref-item'+(r.checked?' ref-checked':'');const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!r.checked;cb.className='ref-cb';cb.onchange=()=>{r.checked=cb.checked;const c=curChat();if(c)c.updatedAt=Date.now();scheduleSave();renderRefPool();};item.appendChild(cb);const icon=r.kind==='file'?(r.type==='document'?'📄':r.type==='table'?'📊':r.type==='image'?'🖼️':'📝'):'💬';let nm=r.name||'';if(r.kind==='file'&&nm.length>8)nm=nm.slice(0,8)+'…';const label=document.createElement('span');label.className='ref-name';label.textContent=icon+nm;label.title=r.name;item.appendChild(label);        if(r.kind==='message'){const rn=document.createElement('button');rn.className='ref-btn';rn.textContent='✏️';rn.title='改备注';rn.onclick=()=>renameRefMsg(r);item.appendChild(rn);}const rm=document.createElement('button');rm.className='ref-btn ref-rm';rm.textContent='×';rm.onclick=()=>{const c=curChat();const idx=c.refPool.indexOf(r);if(idx>-1)c.refPool.splice(idx,1);c.updatedAt=Date.now();scheduleSave();renderRefPool();};item.appendChild(rm);list.appendChild(item);});}
+function renderRefPool(){
+    const bar=document.getElementById('refBar');const list=document.getElementById('refList');
+    if(!bar||!list)return;
+    const pool=sortedRefPool();
+    if(!pool.length){bar.style.display='none';list.innerHTML='';return;}
+    bar.style.display='flex';list.innerHTML='';
+    pool.forEach((r)=>{
+        const item=document.createElement('span');
+        item.className='ref-item'+(r.checked?' ref-checked':'');
+        // 勾选框（是否本轮带上）
+        const cb=document.createElement('input');
+        cb.type='checkbox';cb.checked=!!r.checked;cb.className='ref-cb';
+        cb.onchange=()=>{r.checked=cb.checked;const c=curChat();if(c)c.updatedAt=Date.now();scheduleSave();renderRefPool();};
+        item.appendChild(cb);
+        // 名称
+        const icon=r.kind==='file'?(r.type==='document'?'📄':r.type==='table'?'📊':r.type==='image'?'🖼️':'📝'):'💬';
+        let nm=r.name||'';if(r.kind==='file'&&nm.length>8)nm=nm.slice(0,8)+'…';
+        const label=document.createElement('span');label.className='ref-name';label.textContent=icon+nm;label.title=r.name;
+        item.appendChild(label);
+        // ★ 文件项（文本类）：独立打标开关
+        if(r.kind==='file'&&r.type!=='image'&&r.text){
+            const ck=document.createElement('button');
+            ck.className='ref-btn';ck.textContent='📐';
+            ck.title=r.chunk?'该文件已打标（点击关闭）':'该文件不打标（点击开启）';
+            ck.style.color=r.chunk?'var(--pri)':'var(--text2)';
+            ck.style.opacity=r.chunk?'1':'0.4';
+            ck.onclick=()=>{r.chunk=!r.chunk;const c2=curChat();if(c2)c2.updatedAt=Date.now();scheduleSave();renderRefPool();toast(r.chunk?('已对「'+r.name+'」开启打标'):('已对「'+r.name+'」关闭打标'));};
+            item.appendChild(ck);
+            // 打标时才显示预览眼睛
+            if(r.chunk){
+                const pv=document.createElement('button');
+                pv.className='ref-btn';pv.textContent='👁';pv.title='预览打标效果';
+                pv.onclick=()=>previewChunkObj({fileName:r.name,type:r.type,text:r.text});
+                item.appendChild(pv);
+            }
+        }
+        // 消息项：改备注
+        if(r.kind==='message'){
+            const rn=document.createElement('button');
+            rn.className='ref-btn';rn.textContent='✏️';rn.title='改备注';
+            rn.onclick=()=>renameRefMsg(r);
+            item.appendChild(rn);
+        }
+        // 移除
+        const rm=document.createElement('button');
+        rm.className='ref-btn ref-rm';rm.textContent='×';
+        rm.onclick=()=>{const c=curChat();const idx=c.refPool.indexOf(r);if(idx>-1)c.refPool.splice(idx,1);c.updatedAt=Date.now();scheduleSave();renderRefPool();};
+        item.appendChild(rm);
+        list.appendChild(item);
+    });
+}
+
 /* 消息参考项改名：保留"问题N/回答N"前缀，追加自定义备注 */
 function renameRefMsg(r){
     // 提取前缀（问题N / 回答N），后面的·备注可改
@@ -116,7 +167,7 @@ function renameRefMsg(r){
     scheduleSave();renderRefPool();
 }
 
-function addFileToRefPool(parsed){const c=curChat();if(!c)return;if(!Array.isArray(c.refPool))c.refPool=[];c.refPool.push({id:gId(),kind:'file',name:parsed.fileName,type:parsed.type,text:parsed.text||'',dataUrl:parsed.dataUrl||null,meta:parsed.meta||{},checked:true,addedAt:Date.now()});c.updatedAt=Date.now();scheduleSave();renderRefPool();}
+function addFileToRefPool(parsed){const c=curChat();if(!c)return;if(!Array.isArray(c.refPool))c.refPool=[];c.refPool.push({id:gId(),kind:'file',name:parsed.fileName,type:parsed.type,text:parsed.text||'',dataUrl:parsed.dataUrl||null,meta:parsed.meta||{},checked:true,chunk:_attChunk,addedAt:Date.now()});c.updatedAt=Date.now();scheduleSave();renderRefPool();}
 function toggleRefSelectMode(){_refSelectMode=!_refSelectMode;_selectedMsgs=[];const btn=document.getElementById('refSelBtn');if(btn){btn.style.color=_refSelectMode?'#667eea':'';btn.style.background=_refSelectMode?'var(--pri-l)':'';}const bar=document.getElementById('selActionBar');if(bar)bar.classList.toggle('show',_refSelectMode);renderMs();if(_refSelectMode)toast('☑ 勾选消息后，点"加入参考框"');}
 function addSelectedToRefPool(){const c=curChat();if(!c){toast('无对话','er');return;}if(!_selectedMsgs.length){toast('请先勾选消息','er');return;}if(!Array.isArray(c.refPool))c.refPool=[];let n=0;_selectedMsgs.forEach(mid=>{const m=c.messages.find(x=>x.id===mid);if(!m)return;const txt=typeof m.content==='string'?m.content:'';if(!txt)return;const roleLabel=m.role==='user'?'问题':'回答';const sameRole=c.messages.filter(x=>x.role===m.role);const roundNo=sameRole.indexOf(m)+1;c.refPool.push({id:gId(),kind:'message',name:roleLabel+roundNo,type:'text',text:txt,checked:true,addedAt:Date.now()});n++;});c.updatedAt=Date.now();scheduleSave();_refSelectMode=false;_selectedMsgs=[];const btn=document.getElementById('refSelBtn');if(btn){btn.style.color='';btn.style.background='';}const bar=document.getElementById('selActionBar');if(bar)bar.classList.remove('show');renderMs();renderRefPool();toast('✅ 已加入 '+n+' 项');}
 
@@ -160,10 +211,22 @@ function updSnapInterval(v){S.snapInterval=parseInt(v,10)||0;scheduleSave();if(t
 async function renderStorageInfo(){const el=document.getElementById('storageInfo');if(!el)return;try{const info=await DB.getStorageInfo();const au=Auth&&Auth.getUser?Auth.getUser():null;el.innerHTML='当前登录：<strong>'+(au?esc(au.name||au.username):'-')+'</strong>'+(Auth.isAdmin&&Auth.isAdmin()?'（👑管理员）':'')+'<br>已用：<strong>'+info.usedText+'</strong> / '+info.quotaText+'（'+info.percent+'%）<br>版本：'+APP_VERSION+'<br><button class="btn btn-s btn-d" onclick="Auth.logout()" style="margin-top:8px;width:100%">🚪 退出登录</button>';}catch(e){el.textContent='存储信息获取失败';}}
 
 /* 打标/预览 */
-function toggleChunk(){_attChunk=!_attChunk;const btn=document.getElementById('chunkBtn');if(btn){btn.style.color=_attChunk?'#667eea':'';btn.style.background=_attChunk?'var(--pri-l)':'';btn.title='物理打标（'+(_attChunk?'开':'关')+'）';}toast(_attChunk?'📐 物理打标已开启':'📐 物理打标已关闭');renderRefPool();renderAttList();}
+function toggleChunk(){
+    _attChunk=!_attChunk;
+    const btn=document.getElementById('chunkBtn');
+    if(btn){btn.style.color=_attChunk?'#667eea':'';btn.style.background=_attChunk?'var(--pri-l)':'';btn.title='物理打标默认（'+(_attChunk?'开':'关')+'）';}
+    const c=curChat();
+    if(c&&Array.isArray(c.refPool)){
+        c.refPool.forEach(r=>{if(r.kind==='file'&&r.type!=='image'&&r.text)r.chunk=_attChunk;});
+        c.updatedAt=Date.now();scheduleSave();
+    }
+    toast(_attChunk?'📐 已对全部参考文件开启打标（新文件默认打标）':'📐 已对全部参考文件关闭打标（新文件默认不打标）');
+    renderRefPool();renderAttList();
+}
+
 function previewChunkObj(att){if(typeof Chunker==='undefined'){toast('打标引擎未加载','er');return;}if(!att||!att.text){toast('该附件无文本','er');return;}const ta=document.getElementById('chunkPreviewTA');if(ta)ta.value=Chunker.previewOne(att);const h=document.querySelector('#mo-chunk-preview .md-h h2');if(h)h.textContent='📐 打标预览';openM('chunk-preview');}
 function copyChunkPreview(){const ta=document.getElementById('chunkPreviewTA');if(!ta||!ta.value){toast('无内容','er');return;}try{navigator.clipboard.writeText(ta.value).then(()=>toast('✅ 已复制'));}catch(e){ta.select();document.execCommand('copy');toast('✅ 已复制');}}
-function previewSend(){const c=curChat();if(!c){toast('无对话','er');return;}let out='',sys='';if(c.systemPrompt&&c.systemPrompt.trim())sys+=c.systemPrompt.trim();let kbText='';if(c.knowledgeBase&&c.knowledgeBase.length){c.knowledgeBase.forEach(k=>{if(k.text)kbText+='\n[知识库]'+k.name+'（'+cntW(k.text)+'字）';});}if(kbText)sys+='\n【知识库资料】'+kbText;out+='━━━ SYSTEM ━━━\n'+(sys||'（空）')+'\n\n';let ref='';sortedRefPool().forEach(r=>{if(!r.checked)return;if(r.kind==='file'&&r.type==='image'){ref+='\n[图片] '+r.name;return;}if(!r.text)return;let body=r.text;if(r.kind==='file'&&_attChunk&&typeof Chunker!=='undefined')body=Chunker.chunk(r.text,{}).marked;ref+='\n=== '+(r.kind==='file'?'📎'+r.name:'💬'+r.name)+' ===\n'+body+'\n';});out+='━━━ 参考框（勾选项，文件在前）━━━\n'+(ref||'（无勾选项）')+'\n\n';const inpVal=(document.getElementById('uIn')?document.getElementById('uIn').value:'')||'（输入框当前为空）';out+='━━━ 本轮问题 ━━━\n'+inpVal+'\n\n━━━ 说明 ━━━\n实际发送还含历史对话。工作流隐藏指令不展示。';const ta=document.getElementById('chunkPreviewTA');if(ta)ta.value=out;const h=document.querySelector('#mo-chunk-preview .md-h h2');if(h)h.textContent='📤 发送内容预览';openM('chunk-preview');}
+function previewSend(){const c=curChat();if(!c){toast('无对话','er');return;}let out='',sys='';if(c.systemPrompt&&c.systemPrompt.trim())sys+=c.systemPrompt.trim();let kbText='';if(c.knowledgeBase&&c.knowledgeBase.length){c.knowledgeBase.forEach(k=>{if(k.text)kbText+='\n[知识库]'+k.name+'（'+cntW(k.text)+'字）';});}if(kbText)sys+='\n【知识库资料】'+kbText;out+='━━━ SYSTEM ━━━\n'+(sys||'（空）')+'\n\n';let ref='';sortedRefPool().forEach(r=>{if(!r.checked)return;if(r.kind==='file'&&r.type==='image'){ref+='\n[图片] '+r.name;return;}if(!r.text)return;let body=r.text;if(r.kind==='file'&&r.chunk&&typeof Chunker!=='undefined')body=Chunker.chunk(r.text,{}).marked;ref+='\n=== '+(r.kind==='file'?'📎'+r.name:'💬'+r.name)+' ===\n'+body+'\n';});out+='━━━ 参考框（勾选项，文件在前）━━━\n'+(ref||'（无勾选项）')+'\n\n';const inpVal=(document.getElementById('uIn')?document.getElementById('uIn').value:'')||'（输入框当前为空）';out+='━━━ 本轮问题 ━━━\n'+inpVal+'\n\n━━━ 说明 ━━━\n实际发送还含历史对话。工作流隐藏指令不展示。';const ta=document.getElementById('chunkPreviewTA');if(ta)ta.value=out;const h=document.querySelector('#mo-chunk-preview .md-h h2');if(h)h.textContent='📤 发送内容预览';openM('chunk-preview');}
 
 /* ===== 核心发送 ===== */
 async function coreSend(opts){
@@ -176,7 +239,7 @@ async function coreSend(opts){
     let attachedText='';const imageAtts=[];processedAtts.forEach(a=>{if(a.type==='image')imageAtts.push(a);else if(a.text)attachedText+='\n\n=== 📎 附件：'+a.fileName+' ===\n'+a.text+'\n=== 附件结束 ===\n';});
     let kbText='';const kbImages=[];if(c.knowledgeBase&&c.knowledgeBase.length){c.knowledgeBase.forEach(k=>{if(k.type==='image')kbImages.push({fileName:k.name,dataUrl:k.dataUrl,type:'image'});else if(k.text){let body=k.text;if(_attChunk&&typeof Chunker!=='undefined')body=Chunker.chunk(k.text,{}).marked;kbText+='\n\n=== 📚 知识库：'+k.name+' ===\n'+body+'\n=== 知识库结束 ===\n';}});}
     // ★ 参考框：按排序（文件在前）遍历，保证前缀稳定
-    let refText='';const refImages=[];sortedRefPool().forEach(r=>{if(!r.checked)return;if(r.kind==='file'&&r.type==='image'&&r.dataUrl){refImages.push(r);return;}if(!r.text)return;let body=r.text;if(r.kind==='file'&&_attChunk&&typeof Chunker!=='undefined')body=Chunker.chunk(r.text,{}).marked;const tag=r.kind==='file'?'📎参考文件：'+r.name:'💬参考片段·'+r.name;refText+='\n\n=== '+tag+' ===\n'+body+'\n=== 结束 ===\n';});
+    let refText='';const refImages=[];sortedRefPool().forEach(r=>{if(!r.checked)return;if(r.kind==='file'&&r.type==='image'&&r.dataUrl){refImages.push(r);return;}if(!r.text)return;let body=r.text;if(r.kind==='file'&&r.chunk&&typeof Chunker!=='undefined')body=Chunker.chunk(r.text,{}).marked;const tag=r.kind==='file'?'📎参考文件：'+r.name:'💬参考片段·'+r.name;refText+='\n\n=== '+tag+' ===\n'+body+'\n=== 结束 ===\n';});
     const composedUserText=(attachedText?attachedText+'\n':'')+actualText;
     const userMsg={id:gId(),role:'user',content:visibleText,_actual:actualText,attachments:attsForUser.map(a=>({name:a.fileName,type:a.type,ext:a.meta&&a.meta.ext})),_time:nowTime()};c.messages.push(userMsg);
     const aiMsg={id:gId(),role:'assistant',content:'',_streaming:true,_time:nowTime(),_engId:engId,_model:profile.model};c.messages.push(aiMsg);
