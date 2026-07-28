@@ -128,19 +128,39 @@ const Chunker = (function () {
         };
     }
 
-    /* ---------- 渲染标记文本（中性话术，标记不计入正文字数） ---------- */
+    /* ---------- 渲染标记文本（权威话术 + 速查表，标记不计入正文字数） ---------- */
     function _render(blocks, total) {
         const avg = blocks.length ? Math.round(total / blocks.length) : 0;
-        let out = '=== 文档分块标注（供定位参考）===\n' +
-            '本文档已净化后共 ' + total + ' 字符（每字符算1，不含标记），按每约 ' + avg +
-            ' 字符切为 ' + blocks.length + ' 块，每块标注了字符区间与占全文百分比。\n' +
-            '以下每段用「▌块N｜全文a%-b%」作为分隔，标示其在全文中的位置。\n\n';
+
+        let out = '=== 文档分块索引（权威字数数据，禁止自行估算）===\n' +
+            '【重要规则】本文档由系统精确切分，以下每块的"字符区间""字数""百分比"均为系统实测的准确值。\n' +
+            '当你需要说明某段情节的位置、字数或占比时，必须直接引用下方标记中的现成数字，' +
+            '严禁自己数字符、估算或换算——你的估算一定不准，标记里的数字才是唯一标准。\n' +
+            '· 全文精确总字数：' + total + ' 字符（每字符算1，标记本身不计入）。\n' +
+            '· 共 ' + blocks.length + ' 块，每块约 ' + avg + ' 字符。\n' +
+            '· 引用规则：情节起于「块X」、止于「块Y」，其字数 = 块Y末字号 − 块X首字号 + 1；占比直接取两端标记的百分比。\n' +
+            '· 若情节在某块中间开始/结束，就近取该块边界，并注明"约"。\n\n';
+
+        // 里程碑速查表：每隔约10%列一个锚点，方便AI快速定位大段落，避免累加出错
+        out += '=== 全文进度速查表（直接查，不要算）===\n';
+        const milestones = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        milestones.forEach(pct => {
+            const charNo = Math.round(total * pct / 100);
+            let inBlock = blocks.length;
+            for (const b of blocks) { if (charNo <= b.endChar) { inBlock = b.no; break; } }
+            out += '· 全文 ' + pct + '% ≈ 第 ' + charNo + ' 字（位于块' + inBlock + '）\n';
+        });
+        out += '\n';
+
+        // 逐块正文
         blocks.forEach(b => {
-            out += '▌块' + b.no + '｜全文' + b.pctStart + '%-' + b.pctEnd +
-                '%（第' + b.startChar + '-' + b.endChar + '字）\n' + b.text + '\n\n';
+            out += '▌块' + b.no + '｜首字' + b.startChar + '·末字' + b.endChar +
+                '｜本块' + b.chars + '字｜全文进度' + b.pctStart + '%→' + b.pctEnd + '%\n' +
+                b.text + '\n\n';
         });
         return out;
     }
+
 
     /* ---------- 打标一组附件（发给AI用） ---------- */
     function chunkAttachments(atts, opts) {
