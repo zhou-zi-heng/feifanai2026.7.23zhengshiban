@@ -318,7 +318,7 @@ const API = (function () {
         const usageBox = { usage: null };
 
         const HEARTBEAT_INTERVAL = 5000;
-        const STALL_TIMEOUT = 60000;
+        const STALL_TIMEOUT = 300000;
         const heartbeat = setInterval(() => {
             if (aborted) return;
             if (Date.now() - lastChunkTime > STALL_TIMEOUT) {
